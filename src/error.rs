@@ -2,6 +2,7 @@ use std::fmt::{Display, Formatter};
 
 use bs58::decode::Error as Bs58Error;
 use solana_client::client_error::ClientError;
+use solana_sdk::program_error::ProgramError;
 
 use crate::serialization::Error as DeserializationError;
 
@@ -22,6 +23,11 @@ pub enum Error {
     MismatchMessages,
     InvalidSignature,
     KeyPairIsNotInKeys,
+    TransactionCreationFailed(String),
+    SplTokenError(spl_token::error::TokenError),
+    TokenAccountNotFound,
+    TokenMintNotFound,
+    ProgramError(ProgramError),
 }
 
 impl Display for Error {
@@ -54,6 +60,13 @@ impl Display for Error {
             Self::KeyPairIsNotInKeys => {
                 write!(f, "The provided keypair is not in the list of pubkeys")
             }
+            Self::TransactionCreationFailed(msg) => {
+                write!(f, "Transaction creation failed: {}", msg)
+            }
+            Self::SplTokenError(e) => write!(f, "SPL Token error: {}", e),
+            Self::TokenAccountNotFound => write!(f, "Token account not found"),
+            Self::TokenMintNotFound => write!(f, "Token mint not found"),
+            Self::ProgramError(e) => write!(f, "Program error: {}", e),
         }
     }
 }
@@ -67,6 +80,18 @@ impl From<Bs58Error> for Error {
 impl From<ed25519_dalek::SignatureError> for Error {
     fn from(e: ed25519_dalek::SignatureError) -> Self {
         Self::WrongKeyPair(e)
+    }
+}
+
+impl From<spl_token::error::TokenError> for Error {
+    fn from(e: spl_token::error::TokenError) -> Self {
+        Self::SplTokenError(e)
+    }
+}
+
+impl From<ProgramError> for Error {
+    fn from(e: ProgramError) -> Self {
+        Self::ProgramError(e)
     }
 }
 

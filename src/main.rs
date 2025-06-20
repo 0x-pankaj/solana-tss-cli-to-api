@@ -1,11 +1,12 @@
 use poem::{
-    IntoResponse, Response, Route, Server, handler, listener::TcpListener, post, web::Json,
+    IntoResponse, Response, Route, Server, get, handler, listener::TcpListener, post, web::Json,
 };
 use serde_json;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     hash::Hash as SolanaHash,
     native_token,
+    program_pack::Pack,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
     transaction::Transaction,
@@ -16,12 +17,25 @@ use crate::{
     error::Error,
     models::*,
     serialization::{AggMessage1, PartialSignature, SecretAggStepOne, Serialize},
-    tss::{key_agg, sign_and_broadcast, step_one, step_two},
+    tss::{key_agg, sign_and_broadcast, spl_sign_and_broadcast, spl_step_two, step_one, step_two},
 };
+
+use spl_token::state::{Account, Mint};
+
+use crate::{
+    models::{
+        SplAggSendStepTwoRequest, SplAggSendStepTwoResponse, SplAggregateSignaturesRequest,
+        SplAggregateSignaturesResponse, SplSendSingleRequest, SplSendSingleResponse,
+        SplTokenBalanceRequest, SplTokenBalanceResponse,
+    },
+    spl_token_utils::create_spl_token_transaction,
+};
+use spl_associated_token_account::get_associated_token_address;
 
 mod error;
 mod models;
 mod serialization;
+mod spl_token_utils;
 mod tss;
 
 pub fn create_unsigned_transaction(
@@ -364,10 +378,260 @@ async fn aggregate_signatures(req: Json<AggregateSignaturesRequest>) -> impl Int
     success_response(response)
 }
 
+//////////////////////// spl /////////////////////////////
+
+// token_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+// 6A2GHg17A2YUbLp7qma1pbvnS7deav7Tq3tthQHa8zt5
+#[handler]
+async fn spl_token_balance(req: Json<SplTokenBalanceRequest>) -> impl IntoResponse {
+    let owner = match parse_pubkey(&req.owner) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let token_mint = match parse_pubkey(&req.token_mint) {
+        Ok(mint) => mint,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let rpc_client = RpcClient::new(req.net.get_cluster_url().to_string());
+
+    // Get the associated token address
+    let token_account = get_associated_token_address(&owner, &token_mint);
+
+    // Get token account info
+    let account_info = match rpc_client.get_account(&token_account) {
+        Ok(account) => account,
+        Err(_) => return error_response("Token account not found".to_string()),
+    };
+
+    // Parse the token account data
+    let token_account_data = match Account::unpack(&account_info.data) {
+        Ok(data) => data,
+        Err(e) => return error_response(format!("Failed to parse token account: {}", e)),
+    };
+
+    // Get mint info to get decimals
+    let mint_info = match rpc_client.get_account(&token_mint) {
+        Ok(account) => account,
+        Err(_) => return error_response("Token mint not found".to_string()),
+    };
+
+    let mint_data = match Mint::unpack(&mint_info.data) {
+        Ok(data) => data,
+        Err(e) => return error_response(format!("Failed to parse mint account: {}", e)),
+    };
+
+    let response = SplTokenBalanceResponse {
+        owner: owner.to_string(),
+        token_mint: token_mint.to_string(),
+        balance: token_account_data.amount,
+        decimals: mint_data.decimals,
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn spl_send_single(req: Json<SplSendSingleRequest>) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let to = match parse_pubkey(&req.to) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let token_mint = match parse_pubkey(&req.token_mint) {
+        Ok(mint) => mint,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let rpc_client = RpcClient::new(req.net.get_cluster_url().to_string());
+
+    // Convert amount to proper token units
+    let token_amount = (req.amount * 10_f64.powi(req.decimals as i32)) as u64;
+
+    let mut tx = match create_spl_token_transaction(
+        token_amount,
+        &keypair.pubkey(),
+        &to,
+        &token_mint,
+        &keypair.pubkey(), // payer is the same as from
+        req.memo.clone(),
+        req.decimals,
+    ) {
+        Ok(tx) => tx,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let recent_hash = match rpc_client.get_latest_blockhash() {
+        Ok(hash) => hash,
+        Err(e) => return error_response(Error::RecentHashFailed(e).to_string()),
+    };
+
+    tx.sign(&[&keypair], recent_hash);
+
+    let sig = match rpc_client.send_transaction(&tx) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(Error::SendTransactionFailed(e).to_string()),
+    };
+
+    if let Err(e) =
+        rpc_client.confirm_transaction_with_spinner(&sig, &recent_hash, rpc_client.commitment())
+    {
+        return error_response(Error::ConfirmingTransactionFailed(e).to_string());
+    }
+
+    let response = SplSendSingleResponse {
+        transaction_id: sig.to_string(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn spl_agg_send_step_two(req: Json<SplAggSendStepTwoRequest>) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let to = match parse_pubkey(&req.to) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let token_mint = match parse_pubkey(&req.token_mint) {
+        Ok(mint) => mint,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let block_hash = match parse_hash(&req.recent_block_hash) {
+        Ok(hash) => hash,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let keys: Vec<Pubkey> = match req
+        .keys
+        .iter()
+        .map(|k| parse_pubkey(k))
+        .collect::<Result<_, _>>()
+    {
+        Ok(keys) => keys,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let first_messages: Vec<AggMessage1> = match req
+        .first_messages
+        .iter()
+        .map(|m| AggMessage1::deserialize_bs58(m))
+        .collect::<Result<_, _>>()
+    {
+        Ok(msgs) => msgs,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let secret_state = match SecretAggStepOne::deserialize_bs58(&req.secret_state) {
+        Ok(state) => state,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let sig = match spl_step_two(
+        keypair,
+        req.amount,
+        to,
+        token_mint,
+        req.decimals,
+        req.memo.clone(),
+        block_hash,
+        keys,
+        first_messages,
+        secret_state,
+    ) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let response = SplAggSendStepTwoResponse {
+        partial_signature: sig.serialize_bs58(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn spl_aggregate_signatures(req: Json<SplAggregateSignaturesRequest>) -> impl IntoResponse {
+    let to = match parse_pubkey(&req.to) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let token_mint = match parse_pubkey(&req.token_mint) {
+        Ok(mint) => mint,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let block_hash = match parse_hash(&req.recent_block_hash) {
+        Ok(hash) => hash,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let keys: Vec<Pubkey> = match req
+        .keys
+        .iter()
+        .map(|k| parse_pubkey(k))
+        .collect::<Result<_, _>>()
+    {
+        Ok(keys) => keys,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let signatures: Vec<PartialSignature> = match req
+        .signatures
+        .iter()
+        .map(|s| PartialSignature::deserialize_bs58(s))
+        .collect::<Result<_, _>>()
+    {
+        Ok(sigs) => sigs,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let tx = match spl_sign_and_broadcast(
+        req.amount,
+        to,
+        token_mint,
+        req.decimals,
+        req.memo.clone(),
+        block_hash,
+        keys,
+        signatures,
+    ) {
+        Ok(transaction) => transaction,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let rpc_client = RpcClient::new(req.net.get_cluster_url().to_string());
+    let sig = match rpc_client.send_transaction(&tx) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(Error::SendTransactionFailed(e).to_string()),
+    };
+
+    if let Err(e) =
+        rpc_client.confirm_transaction_with_spinner(&sig, &block_hash, rpc_client.commitment())
+    {
+        return error_response(Error::ConfirmingTransactionFailed(e).to_string());
+    }
+
+    let response = SplAggregateSignaturesResponse {
+        transaction_id: sig.to_string(),
+    };
+    success_response(response)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let app = Route::new()
-        .at("/api/generate", post(generate_keypair))
+        .at("/api/generate", get(generate_keypair))
         .at("/api/balance", post(balance))
         .at("/api/airdrop", post(airdrop))
         .at("/api/send_single", post(send_single))
@@ -375,7 +639,14 @@ async fn main() -> anyhow::Result<()> {
         .at("/api/aggregate_keys", post(aggregate_keys))
         .at("/api/agg_send_step_one", post(agg_send_step_one))
         .at("/api/agg_send_step_two", post(agg_send_step_two))
-        .at("/api/aggregate_signatures", post(aggregate_signatures));
+        .at("/api/aggregate_signatures", post(aggregate_signatures))
+        .at("/api/spl_token_balance", post(spl_token_balance))
+        .at("/api/spl_send_single", post(spl_send_single))
+        .at("/api/spl_agg_send_step_two", post(spl_agg_send_step_two))
+        .at(
+            "/api/spl_aggregate_signatures",
+            post(spl_aggregate_signatures),
+        );
 
     Server::new(TcpListener::bind("127.0.0.1:8000"))
         .run(app)

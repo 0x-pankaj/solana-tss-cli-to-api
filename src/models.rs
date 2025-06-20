@@ -130,3 +130,72 @@ pub struct AggregateSignaturesResponse {
 pub struct ErrorResponse {
     pub error: String,
 }
+
+// SPL Token Transfer Models
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SplTokenBalanceRequest {
+    pub owner: String,
+    pub token_mint: String,
+    pub net: Network,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SplTokenBalanceResponse {
+    pub owner: String,
+    pub token_mint: String,
+    pub balance: u64,
+    pub decimals: u8,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SplSendSingleRequest {
+    pub keypair: String,
+    pub amount: f64,
+    pub to: String,
+    pub token_mint: String,
+    pub decimals: u8,
+    pub net: Network,
+    pub memo: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SplSendSingleResponse {
+    pub transaction_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SplAggSendStepTwoRequest {
+    pub keypair: String,
+    pub amount: f64,
+    pub to: String,
+    pub token_mint: String,
+    pub decimals: u8,
+    pub memo: Option<String>,
+    pub recent_block_hash: String,
+    pub keys: Vec<String>,
+    pub first_messages: Vec<String>,
+    pub secret_state: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SplAggSendStepTwoResponse {
+    pub partial_signature: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SplAggregateSignaturesRequest {
+    pub signatures: Vec<String>,
+    pub amount: f64,
+    pub to: String,
+    pub token_mint: String,
+    pub decimals: u8,
+    pub memo: Option<String>,
+    pub recent_block_hash: String,
+    pub net: Network,
+    pub keys: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SplAggregateSignaturesResponse {
+    pub transaction_id: String,
+}

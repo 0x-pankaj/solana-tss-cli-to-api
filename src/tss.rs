@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+use crate::spl_token_utils::{create_spl_token_transaction, get_token_amount_with_decimals};
 use curv::elliptic::curves::{Ed25519, Point, Scalar};
 use multi_party_eddsa::protocols::ExpandedKeyPair;
 use multi_party_eddsa::protocols::musig2::{self, PrivatePartialNonces, PublicPartialNonces};
@@ -136,6 +137,144 @@ pub fn sign_and_broadcast(
 
     // Create the same transaction again
     let mut tx = create_unsigned_transaction(amount, &to, memo, &aggpubkey);
+    // Insert the recent_block_hash and the signature to the right places
+    tx.message.recent_blockhash = recent_block_hash;
+    assert_eq!(tx.signatures.len(), 1);
+    tx.signatures[0] = sig;
+
+    // Make sure the resulting transaction is actually valid.
+    if tx.verify().is_err() {
+        return Err(Error::InvalidSignature);
+    }
+    Ok(tx)
+}
+
+/// SPL Token Step Two - generates partial signature for SPL token transfer
+#[allow(clippy::too_many_arguments)]
+pub fn spl_step_two(
+    keypair: Keypair,
+    amount: f64,
+    to: Pubkey,
+    token_mint: Pubkey,
+    decimals: u8,
+    memo: Option<String>,
+    recent_block_hash: Hash,
+    keys: Vec<Pubkey>,
+    first_messages: Vec<AggMessage1>,
+    secret_state: SecretAggStepOne,
+) -> Result<PartialSignature, Error> {
+    let other_nonces: Vec<_> = first_messages
+        .into_iter()
+        .map(|msg1| msg1.public_nonces.R)
+        .collect();
+
+    // Generate the aggregate key together with the coefficient of the current keypair
+    let aggkey = key_agg(keys, Some(keypair.pubkey()))?;
+    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
+    let extended_kepair = ExpandedKeyPair::create_from_private_key(keypair.secret().to_bytes());
+
+    // Convert amount to proper token units
+    let token_amount = get_token_amount_with_decimals(amount, decimals);
+
+    // Create the unsigned SPL token transaction
+    let mut tx = create_spl_token_transaction(
+        token_amount,
+        &aggpubkey, // from (the aggregated pubkey owns the tokens)
+        &to,
+        &token_mint,
+        &aggpubkey, // payer (same as from in this case)
+        memo,
+        decimals,
+    )
+    .map_err(|e| {
+        Error::TransactionCreationFailed(format!("SPL token transaction creation failed: {:?}", e))
+    })?;
+
+    let signer = PartialSigner {
+        signer_private_nonce: secret_state.private_nonces,
+        signer_public_nonce: secret_state.public_nonces,
+        other_nonces,
+        extended_kepair,
+        aggregated_pubkey: aggkey,
+    };
+
+    // Sign the transaction using the partial signer
+    tx.sign(&[&signer], recent_block_hash);
+    let sig = tx.signatures[0];
+    Ok(PartialSignature(sig))
+}
+
+/// SPL Token Sign and Broadcast - aggregates signatures and broadcasts SPL token transaction
+pub fn spl_sign_and_broadcast(
+    amount: f64,
+    to: Pubkey,
+    token_mint: Pubkey,
+    decimals: u8,
+    memo: Option<String>,
+    recent_block_hash: Hash,
+    keys: Vec<Pubkey>,
+    signatures: Vec<PartialSignature>,
+) -> Result<Transaction, Error> {
+    let aggkey = key_agg(keys, None)?;
+    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
+
+    // Make sure all the `R`s are the same
+    if !signatures[1..]
+        .iter()
+        .map(|s| &s.0.as_ref()[..32])
+        .all(|s| s == &signatures[0].0.as_ref()[..32])
+    {
+        return Err(Error::MismatchMessages);
+    }
+
+    let deserialize_R = |s| {
+        Point::from_bytes(s).map_err(|e| Error::DeserializationFailed {
+            error: DeserializationError::InvalidPoint(e),
+            field_name: "signatures",
+        })
+    };
+    let deserialize_s = |s| {
+        Scalar::from_bytes(s).map_err(|e| Error::DeserializationFailed {
+            error: DeserializationError::InvalidScalar(e),
+            field_name: "signatures",
+        })
+    };
+
+    let first_sig = musig2::PartialSignature {
+        R: deserialize_R(&signatures[0].0.as_ref()[..32])?,
+        my_partial_s: deserialize_s(&signatures[0].0.as_ref()[32..])?,
+    };
+
+    let partial_sigs: Vec<_> = signatures[1..]
+        .iter()
+        .map(|s| deserialize_s(&s.0.as_ref()[32..]))
+        .collect::<Result<_, _>>()?;
+
+    // Add the signatures up
+    let full_sig = musig2::aggregate_partial_signatures(&first_sig, &partial_sigs);
+
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes[..32].copy_from_slice(&*full_sig.R.to_bytes(true));
+    sig_bytes[32..].copy_from_slice(&full_sig.s.to_bytes());
+    let sig = Signature::new(&sig_bytes);
+
+    // Convert amount to proper token units
+    let token_amount = get_token_amount_with_decimals(amount, decimals);
+
+    // Create the same SPL token transaction again
+    let mut tx = create_spl_token_transaction(
+        token_amount,
+        &aggpubkey,
+        &to,
+        &token_mint,
+        &aggpubkey,
+        memo,
+        decimals,
+    )
+    .map_err(|e| {
+        Error::TransactionCreationFailed(format!("SPL token transaction creation failed: {:?}", e))
+    })?;
+
     // Insert the recent_block_hash and the signature to the right places
     tx.message.recent_blockhash = recent_block_hash;
     assert_eq!(tx.signatures.len(), 1);
