@@ -10,6 +10,12 @@ use solana_sdk::{hash::Hash, pubkey::Pubkey, transaction::Transaction};
 use crate::serialization::{
     AggMessage1, Error as DeserializationError, PartialSignature, SecretAggStepOne,
 };
+
+use crate::staking::{
+    create_deactivate_stake_transaction, create_stake_account_transaction,
+    create_withdraw_stake_transaction,
+};
+
 use crate::{Error, create_unsigned_transaction};
 
 /// Create the aggregate public key, pass key=None if you don't care about the coefficient
@@ -284,6 +290,297 @@ pub fn spl_sign_and_broadcast(
     if tx.verify().is_err() {
         return Err(Error::InvalidSignature);
     }
+    Ok(tx)
+}
+
+/// Step two for staking - creates partial signature for stake transaction
+///
+///
+
+#[allow(clippy::too_many_arguments)]
+pub fn stake_step_two(
+    keypair: Keypair,
+    stake_amount: u64,
+    seed: String,
+    recent_block_hash: Hash,
+    keys: Vec<Pubkey>,
+    first_messages: Vec<AggMessage1>,
+    secret_state: SecretAggStepOne,
+) -> Result<PartialSignature, Error> {
+    let other_nonces: Vec<_> = first_messages
+        .into_iter()
+        .map(|msg1| msg1.public_nonces.R)
+        .collect();
+
+    let aggkey = key_agg(keys.clone(), Some(keypair.pubkey()))?;
+    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
+    let extended_kepair = ExpandedKeyPair::create_from_private_key(keypair.secret().to_bytes());
+
+    let mut tx = create_stake_account_transaction(stake_amount, &seed, &aggpubkey)?;
+
+    let signer = PartialSigner {
+        signer_private_nonce: secret_state.private_nonces,
+        signer_public_nonce: secret_state.public_nonces,
+        other_nonces,
+        extended_kepair,
+        aggregated_pubkey: aggkey,
+    };
+
+    tx.sign(&[&signer], recent_block_hash);
+    let sig = tx.signatures[0];
+    Ok(PartialSignature(sig))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn deactivate_stake_step_two(
+    keypair: Keypair,
+    stake_account: Pubkey,
+    recent_block_hash: Hash,
+    keys: Vec<Pubkey>,
+    first_messages: Vec<AggMessage1>,
+    secret_state: SecretAggStepOne,
+) -> Result<PartialSignature, Error> {
+    let other_nonces: Vec<_> = first_messages
+        .into_iter()
+        .map(|msg1| msg1.public_nonces.R)
+        .collect();
+
+    let aggkey = key_agg(keys.clone(), Some(keypair.pubkey()))?;
+    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
+    let extended_kepair = ExpandedKeyPair::create_from_private_key(keypair.secret().to_bytes());
+
+    let mut tx = create_deactivate_stake_transaction(&stake_account, &aggpubkey);
+
+    let signer = PartialSigner {
+        signer_private_nonce: secret_state.private_nonces,
+        signer_public_nonce: secret_state.public_nonces,
+        other_nonces,
+        extended_kepair,
+        aggregated_pubkey: aggkey,
+    };
+
+    tx.sign(&[&signer], recent_block_hash);
+    let sig = tx.signatures[0];
+    Ok(PartialSignature(sig))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn withdraw_stake_step_two(
+    keypair: Keypair,
+    stake_account: Pubkey,
+    destination: Pubkey,
+    amount: u64,
+    recent_block_hash: Hash,
+    keys: Vec<Pubkey>,
+    first_messages: Vec<AggMessage1>,
+    secret_state: SecretAggStepOne,
+) -> Result<PartialSignature, Error> {
+    let other_nonces: Vec<_> = first_messages
+        .into_iter()
+        .map(|msg1| msg1.public_nonces.R)
+        .collect();
+
+    let aggkey = key_agg(keys.clone(), Some(keypair.pubkey()))?;
+    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
+    let extended_kepair = ExpandedKeyPair::create_from_private_key(keypair.secret().to_bytes());
+
+    let mut tx =
+        create_withdraw_stake_transaction(&stake_account, &destination, &aggpubkey, amount);
+
+    let signer = PartialSigner {
+        signer_private_nonce: secret_state.private_nonces,
+        signer_public_nonce: secret_state.public_nonces,
+        other_nonces,
+        extended_kepair,
+        aggregated_pubkey: aggkey,
+    };
+
+    tx.sign(&[&signer], recent_block_hash);
+    let sig = tx.signatures[0];
+    Ok(PartialSignature(sig))
+}
+
+pub fn aggregate_stake_signatures_and_broadcast(
+    stake_amount: u64,
+    seed: String,
+    recent_block_hash: Hash,
+    keys: Vec<Pubkey>,
+    signatures: Vec<PartialSignature>,
+) -> Result<Transaction, Error> {
+    let aggkey = key_agg(keys.clone(), None)?;
+    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
+
+    if !signatures[1..]
+        .iter()
+        .map(|s| &s.0.as_ref()[..32])
+        .all(|s| s == &signatures[0].0.as_ref()[..32])
+    {
+        return Err(Error::MismatchMessages);
+    }
+
+    let deserialize_R = |s: &[u8]| {
+        Point::from_bytes(s).map_err(|e| Error::DeserializationFailed {
+            error: crate::serialization::Error::InvalidPoint(e),
+            field_name: "signatures",
+        })
+    };
+    let deserialize_s = |s: &[u8]| {
+        Scalar::from_bytes(s).map_err(|e| Error::DeserializationFailed {
+            error: crate::serialization::Error::InvalidScalar(e),
+            field_name: "signatures",
+        })
+    };
+
+    let first_sig = musig2::PartialSignature {
+        R: deserialize_R(&signatures[0].0.as_ref()[..32])?,
+        my_partial_s: deserialize_s(&signatures[0].0.as_ref()[32..])?,
+    };
+
+    let partial_sigs: Vec<_> = signatures[1..]
+        .iter()
+        .map(|s| deserialize_s(&s.0.as_ref()[32..]))
+        .collect::<Result<_, _>>()?;
+
+    let full_sig = musig2::aggregate_partial_signatures(&first_sig, &partial_sigs);
+
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes[..32].copy_from_slice(&*full_sig.R.to_bytes(true));
+    sig_bytes[32..].copy_from_slice(&full_sig.s.to_bytes());
+    let sig = Signature::new(&sig_bytes);
+
+    let mut tx = create_stake_account_transaction(stake_amount, &seed, &aggpubkey)?;
+
+    tx.message.recent_blockhash = recent_block_hash;
+    assert_eq!(tx.signatures.len(), 1);
+    tx.signatures[0] = sig;
+
+    if tx.verify().is_err() {
+        return Err(Error::InvalidSignature);
+    }
+
+    Ok(tx)
+}
+
+pub fn aggregate_deactivate_stake_signatures_and_broadcast(
+    stake_account: Pubkey,
+    recent_block_hash: Hash,
+    keys: Vec<Pubkey>,
+    signatures: Vec<PartialSignature>,
+) -> Result<Transaction, Error> {
+    let aggkey = key_agg(keys.clone(), None)?;
+    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
+
+    if !signatures[1..]
+        .iter()
+        .map(|s| &s.0.as_ref()[..32])
+        .all(|s| s == &signatures[0].0.as_ref()[..32])
+    {
+        return Err(Error::MismatchMessages);
+    }
+
+    let deserialize_R = |s: &[u8]| {
+        Point::from_bytes(s).map_err(|e| Error::DeserializationFailed {
+            error: crate::serialization::Error::InvalidPoint(e),
+            field_name: "signatures",
+        })
+    };
+    let deserialize_s = |s: &[u8]| {
+        Scalar::from_bytes(s).map_err(|e| Error::DeserializationFailed {
+            error: crate::serialization::Error::InvalidScalar(e),
+            field_name: "signatures",
+        })
+    };
+
+    let first_sig = musig2::PartialSignature {
+        R: deserialize_R(&signatures[0].0.as_ref()[..32])?,
+        my_partial_s: deserialize_s(&signatures[0].0.as_ref()[32..])?,
+    };
+
+    let partial_sigs: Vec<_> = signatures[1..]
+        .iter()
+        .map(|s| deserialize_s(&s.0.as_ref()[32..]))
+        .collect::<Result<_, _>>()?;
+
+    let full_sig = musig2::aggregate_partial_signatures(&first_sig, &partial_sigs);
+
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes[..32].copy_from_slice(&*full_sig.R.to_bytes(true));
+    sig_bytes[32..].copy_from_slice(&full_sig.s.to_bytes());
+    let sig = Signature::new(&sig_bytes);
+
+    let mut tx = create_deactivate_stake_transaction(&stake_account, &aggpubkey);
+
+    tx.message.recent_blockhash = recent_block_hash;
+    assert_eq!(tx.signatures.len(), 1);
+    tx.signatures[0] = sig;
+
+    if tx.verify().is_err() {
+        return Err(Error::InvalidSignature);
+    }
+
+    Ok(tx)
+}
+
+pub fn aggregate_withdraw_stake_signatures_and_broadcast(
+    stake_account: Pubkey,
+    destination: Pubkey,
+    amount: u64,
+    recent_block_hash: Hash,
+    keys: Vec<Pubkey>,
+    signatures: Vec<PartialSignature>,
+) -> Result<Transaction, Error> {
+    let aggkey = key_agg(keys.clone(), None)?;
+    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
+
+    if !signatures[1..]
+        .iter()
+        .map(|s| &s.0.as_ref()[..32])
+        .all(|s| s == &signatures[0].0.as_ref()[..32])
+    {
+        return Err(Error::MismatchMessages);
+    }
+
+    let deserialize_R = |s: &[u8]| {
+        Point::from_bytes(s).map_err(|e| Error::DeserializationFailed {
+            error: crate::serialization::Error::InvalidPoint(e),
+            field_name: "signatures",
+        })
+    };
+    let deserialize_s = |s: &[u8]| {
+        Scalar::from_bytes(s).map_err(|e| Error::DeserializationFailed {
+            error: crate::serialization::Error::InvalidScalar(e),
+            field_name: "signatures",
+        })
+    };
+
+    let first_sig = musig2::PartialSignature {
+        R: deserialize_R(&signatures[0].0.as_ref()[..32])?,
+        my_partial_s: deserialize_s(&signatures[0].0.as_ref()[32..])?,
+    };
+
+    let partial_sigs: Vec<_> = signatures[1..]
+        .iter()
+        .map(|s| deserialize_s(&s.0.as_ref()[32..]))
+        .collect::<Result<_, _>>()?;
+
+    let full_sig = musig2::aggregate_partial_signatures(&first_sig, &partial_sigs);
+
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes[..32].copy_from_slice(&*full_sig.R.to_bytes(true));
+    sig_bytes[32..].copy_from_slice(&full_sig.s.to_bytes());
+    let sig = Signature::new(&sig_bytes);
+
+    let mut tx =
+        create_withdraw_stake_transaction(&stake_account, &destination, &aggpubkey, amount);
+
+    tx.message.recent_blockhash = recent_block_hash;
+    assert_eq!(tx.signatures.len(), 1);
+    tx.signatures[0] = sig;
+
+    if tx.verify().is_err() {
+        return Err(Error::InvalidSignature);
+    }
+
     Ok(tx)
 }
 

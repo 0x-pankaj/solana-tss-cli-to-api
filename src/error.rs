@@ -28,6 +28,13 @@ pub enum Error {
     TokenAccountNotFound,
     TokenMintNotFound,
     ProgramError(ProgramError),
+
+    StakeAccountCreationFailed(String),
+    InvalidStakeAccountSeed(String),
+    StakeDelegationFailed(String),
+    DeactivationFailed(String),
+    WithdrawalFailed(String),
+    InvalidPublicKey(String),
 }
 
 impl Display for Error {
@@ -67,6 +74,15 @@ impl Display for Error {
             Self::TokenAccountNotFound => write!(f, "Token account not found"),
             Self::TokenMintNotFound => write!(f, "Token mint not found"),
             Self::ProgramError(e) => write!(f, "Program error: {}", e),
+
+            Self::StakeAccountCreationFailed(e) => {
+                write!(f, "Failed to create stake account: {}", e)
+            }
+            Self::InvalidStakeAccountSeed(e) => write!(f, "Invalid stake account seed: {}", e),
+            Self::StakeDelegationFailed(e) => write!(f, "Failed to delegate stake: {}", e),
+            Self::DeactivationFailed(e) => write!(f, "Failed to deactivate stake: {}", e),
+            Self::WithdrawalFailed(e) => write!(f, "Failed to withdraw stake: {}", e),
+            Self::InvalidPublicKey(e) => write!(f, "invalid public key: {}", e),
         }
     }
 }

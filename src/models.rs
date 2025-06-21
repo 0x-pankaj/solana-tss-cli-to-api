@@ -199,3 +199,174 @@ pub struct SplAggregateSignaturesRequest {
 pub struct SplAggregateSignaturesResponse {
     pub transaction_id: String,
 }
+
+//-----------------------stake Account Creation
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StakeAccountRequest {
+    pub net: Network,
+    pub keypair: String,   // Base58 encoded keypair
+    pub stake_amount: u64, // Amount to stake in lamports
+    pub seed: String,      // Seed for deriving the stake account
+}
+
+#[derive(Debug, Serialize)]
+pub struct StakeAccountResponse {
+    pub stake_account_address: String,
+    pub transaction_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeactivateStakeRequest {
+    pub net: Network,
+    pub keypair: String,       // Base58 encoded keypair
+    pub stake_account: String, // Stake account pubkey
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeactivateStakeResponse {
+    pub transaction_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WithdrawStakeRequest {
+    pub net: Network,
+    pub keypair: String,       // Base58 encoded keypair
+    pub stake_account: String, // Stake account pubkey
+    pub destination: String,   // Destination pubkey for withdrawn funds
+    pub amount: u64,           // Amount to withdraw in lamports
+}
+
+#[derive(Debug, Serialize)]
+pub struct WithdrawStakeResponse {
+    pub transaction_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggStakeStepOneRequest {
+    pub keypair: String, // Base58 encoded keypair
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggStakeStepOneResponse {
+    pub message_1: String,    // Base58 encoded AggMessage1
+    pub secret_state: String, // Base58 encoded SecretAggStepOne
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggStakeStepTwoRequest {
+    pub net: Network,
+    pub keypair: String,             // Base58 encoded keypair
+    pub stake_amount: u64,           // Amount to stake in lamports
+    pub seed: String,                // Seed for stake account
+    pub keys: Vec<String>,           // List of pubkeys for aggregation
+    pub first_messages: Vec<String>, // Base58 encoded AggMessage1
+    pub secret_state: String,        // Base58 encoded SecretAggStepOne from step one
+    pub recent_block_hash: String,   // Base58 encoded recent blockhash
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggStakeStepTwoResponse {
+    pub partial_signature: String, // Base58 encoded PartialSignature
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggDeactivateStakeStepOneRequest {
+    pub keypair: String, // Base58 encoded keypair
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggDeactivateStakeStepOneResponse {
+    pub message_1: String,    // Base58 encoded AggMessage1
+    pub secret_state: String, // Base58 encoded SecretAggStepOne
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggDeactivateStakeStepTwoRequest {
+    pub net: Network,
+    pub keypair: String,             // Base58 encoded keypair
+    pub stake_account: String,       // Stake account pubkey
+    pub keys: Vec<String>,           // List of pubkeys for aggregation
+    pub first_messages: Vec<String>, // Base58 encoded AggMessage1
+    pub secret_state: String,        // Base58 encoded SecretAggStepOne from step one
+    pub recent_block_hash: String,   // Base58 encoded recent blockhash
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggDeactivateStakeStepTwoResponse {
+    pub partial_signature: String, // Base58 encoded PartialSignature
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggWithdrawStakeStepOneRequest {
+    pub keypair: String, // Base58 encoded keypair
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggWithdrawStakeStepOneResponse {
+    pub message_1: String,    // Base58 encoded AggMessage1
+    pub secret_state: String, // Base58 encoded SecretAggStepOne
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggWithdrawStakeStepTwoRequest {
+    pub net: Network,
+    pub keypair: String,             // Base58 encoded keypair
+    pub stake_account: String,       // Stake account pubkey
+    pub destination: String,         // Destination pubkey for withdrawn funds
+    pub amount: u64,                 // Amount to withdraw in lamports
+    pub keys: Vec<String>,           // List of pubkeys for aggregation
+    pub first_messages: Vec<String>, // Base58 encoded AggMessage1
+    pub secret_state: String,        // Base58 encoded SecretAggStepOne from step one
+    pub recent_block_hash: String,   // Base58 encoded recent blockhash
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggWithdrawStakeStepTwoResponse {
+    pub partial_signature: String, // Base58 encoded PartialSignature
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggregateStakeSignaturesRequest {
+    pub net: Network,
+    pub stake_amount: u64,         // Amount to stake in lamports
+    pub seed: String,              // Seed for stake account
+    pub keys: Vec<String>,         // List of pubkeys
+    pub signatures: Vec<String>,   // Base58 encoded PartialSignatures
+    pub recent_block_hash: String, // Base58 encoded recent blockhash
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggregateStakeSignaturesResponse {
+    pub transaction_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggregateDeactivateStakeSignaturesRequest {
+    pub net: Network,
+    pub stake_account: String,     // Stake account pubkey
+    pub keys: Vec<String>,         // List of pubkeys
+    pub signatures: Vec<String>,   // Base58 encoded PartialSignatures
+    pub recent_block_hash: String, // Base58 encoded recent blockhash
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggregateDeactivateStakeSignaturesResponse {
+    pub transaction_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggregateWithdrawStakeSignaturesRequest {
+    pub net: Network,
+    pub stake_account: String,     // Stake account pubkey
+    pub destination: String,       // Destination pubkey
+    pub amount: u64,               // Amount to withdraw in lamports
+    pub keys: Vec<String>,         // List of pubkeys
+    pub signatures: Vec<String>,   // Base58 encoded PartialSignatures
+    pub recent_block_hash: String, // Base58 encoded recent blockhash
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggregateWithdrawStakeSignaturesResponse {
+    pub transaction_id: String,
+}

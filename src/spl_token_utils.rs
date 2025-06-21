@@ -32,6 +32,18 @@ pub fn create_spl_token_transaction(
     );
     instructions.push(create_ata_instruction);
 
+    // ----- in production
+    // client = rpc client
+    // let account_info =  client.get_account(&to_ata);
+    // if account_info.is_err() {
+    //     let create_ata_instruction = create_associated_token_account(
+    //         payer, // fee payer
+    //         to,    // wallet owner
+    //         token_mint,
+    //         &spl_token::id(),
+    //     );
+    // }
+
     // Create the token transfer instruction
     let transfer_instruction = token_instruction::transfer(
         &spl_token::id(),

@@ -17,7 +17,17 @@ use crate::{
     error::Error,
     models::*,
     serialization::{AggMessage1, PartialSignature, SecretAggStepOne, Serialize},
-    tss::{key_agg, sign_and_broadcast, spl_sign_and_broadcast, spl_step_two, step_one, step_two},
+    staking::{
+        create_deactivate_stake_transaction, create_stake_account_transaction,
+        create_withdraw_stake_transaction,
+    },
+    tss::{
+        aggregate_deactivate_stake_signatures_and_broadcast,
+        aggregate_stake_signatures_and_broadcast,
+        aggregate_withdraw_stake_signatures_and_broadcast, deactivate_stake_step_two, key_agg,
+        sign_and_broadcast, spl_sign_and_broadcast, spl_step_two, stake_step_two, step_one,
+        step_two, withdraw_stake_step_two,
+    },
 };
 
 use spl_token::state::{Account, Mint};
@@ -31,11 +41,11 @@ use crate::{
     spl_token_utils::create_spl_token_transaction,
 };
 use spl_associated_token_account::get_associated_token_address;
-
 mod error;
 mod models;
 mod serialization;
 mod spl_token_utils;
+mod staking;
 mod tss;
 
 pub fn create_unsigned_transaction(
@@ -628,6 +638,574 @@ async fn spl_aggregate_signatures(req: Json<SplAggregateSignaturesRequest>) -> i
     success_response(response)
 }
 
+// -------------------------- staking -----------------------//
+//
+
+#[handler]
+async fn stake_account(req: Json<StakeAccountRequest>) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let rpc_client = RpcClient::new(req.net.get_cluster_url().to_string());
+    let mut tx =
+        match create_stake_account_transaction(req.stake_amount, &req.seed, &keypair.pubkey()) {
+            Ok(tx) => tx,
+            Err(e) => return error_response(e.to_string()),
+        };
+
+    let recent_hash = match rpc_client.get_latest_blockhash() {
+        Ok(hash) => hash,
+        Err(e) => return error_response(Error::RecentHashFailed(e).to_string()),
+    };
+
+    tx.sign(&[&keypair], recent_hash);
+
+    let sig = match rpc_client.send_transaction(&tx) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(Error::SendTransactionFailed(e).to_string()),
+    };
+
+    if let Err(e) =
+        rpc_client.confirm_transaction_with_spinner(&sig, &recent_hash, rpc_client.commitment())
+    {
+        return error_response(Error::ConfirmingTransactionFailed(e).to_string());
+    }
+
+    let stake_account = match Pubkey::create_with_seed(
+        &keypair.pubkey(),
+        &req.seed,
+        &solana_sdk::stake::program::id(),
+    ) {
+        Ok(addr) => addr,
+        Err(_) => {
+            return error_response("Invalid stake account seed".to_string());
+        }
+    };
+
+    let response = StakeAccountResponse {
+        stake_account_address: stake_account.to_string(),
+        transaction_id: sig.to_string(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn deactivate_stake(req: Json<DeactivateStakeRequest>) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let stake_accountt = match parse_pubkey(&req.stake_account) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let rpc_client = RpcClient::new(req.net.get_cluster_url().to_string());
+    let mut tx = create_deactivate_stake_transaction(&stake_accountt, &keypair.pubkey());
+
+    let recent_hash = match rpc_client.get_latest_blockhash() {
+        Ok(hash) => hash,
+        Err(e) => return error_response(Error::RecentHashFailed(e).to_string()),
+    };
+
+    tx.sign(&[&keypair], recent_hash);
+
+    let sig = match rpc_client.send_transaction(&tx) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(Error::SendTransactionFailed(e).to_string()),
+    };
+
+    if let Err(e) =
+        rpc_client.confirm_transaction_with_spinner(&sig, &recent_hash, rpc_client.commitment())
+    {
+        return error_response(Error::ConfirmingTransactionFailed(e).to_string());
+    }
+
+    let response = DeactivateStakeResponse {
+        transaction_id: sig.to_string(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn withdraw_stake(req: Json<WithdrawStakeRequest>) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let stake_accountt = match parse_pubkey(&req.stake_account) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let destination = match parse_pubkey(&req.destination) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let rpc_client = RpcClient::new(req.net.get_cluster_url().to_string());
+    let mut tx = create_withdraw_stake_transaction(
+        &stake_accountt,
+        &destination,
+        &keypair.pubkey(),
+        req.amount,
+    );
+
+    let recent_hash = match rpc_client.get_latest_blockhash() {
+        Ok(hash) => hash,
+        Err(e) => return error_response(Error::RecentHashFailed(e).to_string()),
+    };
+
+    tx.sign(&[&keypair], recent_hash);
+
+    let sig = match rpc_client.send_transaction(&tx) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(Error::SendTransactionFailed(e).to_string()),
+    };
+
+    if let Err(e) =
+        rpc_client.confirm_transaction_with_spinner(&sig, &recent_hash, rpc_client.commitment())
+    {
+        return error_response(Error::ConfirmingTransactionFailed(e).to_string());
+    }
+
+    let response = WithdrawStakeResponse {
+        transaction_id: sig.to_string(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn agg_stake_step_one(req: Json<AggStakeStepOneRequest>) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let (first_msg, secret) = step_one(keypair);
+    let response = AggStakeStepOneResponse {
+        message_1: first_msg.serialize_bs58(),
+        secret_state: secret.serialize_bs58(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn agg_stake_step_two(req: Json<AggStakeStepTwoRequest>) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let block_hash = match parse_hash(&req.recent_block_hash) {
+        Ok(hash) => hash,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let keys: Vec<Pubkey> = match req
+        .keys
+        .iter()
+        .map(|k| parse_pubkey(k))
+        .collect::<Result<_, _>>()
+    {
+        Ok(keys) => keys,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let first_messages: Vec<AggMessage1> = match req
+        .first_messages
+        .iter()
+        .map(|m| AggMessage1::deserialize_bs58(m))
+        .collect::<Result<_, _>>()
+    {
+        Ok(msgs) => msgs,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let secret_state = match SecretAggStepOne::deserialize_bs58(&req.secret_state) {
+        Ok(state) => state,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let sig = match stake_step_two(
+        keypair,
+        req.stake_amount,
+        req.seed.clone(),
+        block_hash,
+        keys,
+        first_messages,
+        secret_state,
+    ) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let response = AggStakeStepTwoResponse {
+        partial_signature: sig.serialize_bs58(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn agg_deactivate_stake_step_one(
+    req: Json<AggDeactivateStakeStepOneRequest>,
+) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let (first_msg, secret) = step_one(keypair);
+    let response = AggDeactivateStakeStepOneResponse {
+        message_1: first_msg.serialize_bs58(),
+        secret_state: secret.serialize_bs58(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn agg_deactivate_stake_step_two(
+    req: Json<AggDeactivateStakeStepTwoRequest>,
+) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let stake_accountt = match parse_pubkey(&req.stake_account) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let block_hash = match parse_hash(&req.recent_block_hash) {
+        Ok(hash) => hash,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let keys: Vec<Pubkey> = match req
+        .keys
+        .iter()
+        .map(|k| parse_pubkey(k))
+        .collect::<Result<_, _>>()
+    {
+        Ok(keys) => keys,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let first_messages: Vec<AggMessage1> = match req
+        .first_messages
+        .iter()
+        .map(|m| AggMessage1::deserialize_bs58(m))
+        .collect::<Result<_, _>>()
+    {
+        Ok(msgs) => msgs,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let secret_state = match SecretAggStepOne::deserialize_bs58(&req.secret_state) {
+        Ok(state) => state,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let sig = match deactivate_stake_step_two(
+        keypair,
+        stake_accountt,
+        block_hash,
+        keys,
+        first_messages,
+        secret_state,
+    ) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let response = AggDeactivateStakeStepTwoResponse {
+        partial_signature: sig.serialize_bs58(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn agg_withdraw_stake_step_one(
+    req: Json<AggWithdrawStakeStepOneRequest>,
+) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let (first_msg, secret) = step_one(keypair);
+    let response = AggWithdrawStakeStepOneResponse {
+        message_1: first_msg.serialize_bs58(),
+        secret_state: secret.serialize_bs58(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn agg_withdraw_stake_step_two(
+    req: Json<AggWithdrawStakeStepTwoRequest>,
+) -> impl IntoResponse {
+    let keypair = match parse_keypair_bs58(&req.keypair) {
+        Ok(kp) => kp,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let stake_accountt = match parse_pubkey(&req.stake_account) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let destination = match parse_pubkey(&req.destination) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let block_hash = match parse_hash(&req.recent_block_hash) {
+        Ok(hash) => hash,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let keys: Vec<Pubkey> = match req
+        .keys
+        .iter()
+        .map(|k| parse_pubkey(k))
+        .collect::<Result<_, _>>()
+    {
+        Ok(keys) => keys,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let first_messages: Vec<AggMessage1> = match req
+        .first_messages
+        .iter()
+        .map(|m| AggMessage1::deserialize_bs58(m))
+        .collect::<Result<_, _>>()
+    {
+        Ok(msgs) => msgs,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let secret_state = match SecretAggStepOne::deserialize_bs58(&req.secret_state) {
+        Ok(state) => state,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let sig = match withdraw_stake_step_two(
+        keypair,
+        stake_accountt,
+        destination,
+        req.amount,
+        block_hash,
+        keys,
+        first_messages,
+        secret_state,
+    ) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let response = AggWithdrawStakeStepTwoResponse {
+        partial_signature: sig.serialize_bs58(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn aggregate_stake_signatures(
+    req: Json<AggregateStakeSignaturesRequest>,
+) -> impl IntoResponse {
+    let block_hash = match parse_hash(&req.recent_block_hash) {
+        Ok(hash) => hash,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let keys: Vec<Pubkey> = match req
+        .keys
+        .iter()
+        .map(|k| parse_pubkey(k))
+        .collect::<Result<_, _>>()
+    {
+        Ok(keys) => keys,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let signatures: Vec<PartialSignature> = match req
+        .signatures
+        .iter()
+        .map(|s| PartialSignature::deserialize_bs58(s))
+        .collect::<Result<_, _>>()
+    {
+        Ok(sigs) => sigs,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let tx = match aggregate_stake_signatures_and_broadcast(
+        req.stake_amount,
+        req.seed.clone(),
+        block_hash,
+        keys,
+        signatures,
+    ) {
+        Ok(tx) => tx,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let rpc_client = RpcClient::new(req.net.get_cluster_url().to_string());
+    let sig = match rpc_client.send_transaction(&tx) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(Error::SendTransactionFailed(e).to_string()),
+    };
+
+    if let Err(e) =
+        rpc_client.confirm_transaction_with_spinner(&sig, &block_hash, rpc_client.commitment())
+    {
+        return error_response(Error::ConfirmingTransactionFailed(e).to_string());
+    }
+
+    let response = AggregateStakeSignaturesResponse {
+        transaction_id: sig.to_string(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn aggregate_deactivate_stake_signatures(
+    req: Json<AggregateDeactivateStakeSignaturesRequest>,
+) -> impl IntoResponse {
+    let stake_accountt = match parse_pubkey(&req.stake_account) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let block_hash = match parse_hash(&req.recent_block_hash) {
+        Ok(hash) => hash,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let keys: Vec<Pubkey> = match req
+        .keys
+        .iter()
+        .map(|k| parse_pubkey(k))
+        .collect::<Result<_, _>>()
+    {
+        Ok(keys) => keys,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let signatures: Vec<PartialSignature> = match req
+        .signatures
+        .iter()
+        .map(|s| PartialSignature::deserialize_bs58(s))
+        .collect::<Result<_, _>>()
+    {
+        Ok(sigs) => sigs,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let tx = match aggregate_deactivate_stake_signatures_and_broadcast(
+        stake_accountt,
+        block_hash,
+        keys,
+        signatures,
+    ) {
+        Ok(tx) => tx,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let rpc_client = RpcClient::new(req.net.get_cluster_url().to_string());
+    let sig = match rpc_client.send_transaction(&tx) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(Error::SendTransactionFailed(e).to_string()),
+    };
+
+    if let Err(e) =
+        rpc_client.confirm_transaction_with_spinner(&sig, &block_hash, rpc_client.commitment())
+    {
+        return error_response(Error::ConfirmingTransactionFailed(e).to_string());
+    }
+
+    let response = AggregateDeactivateStakeSignaturesResponse {
+        transaction_id: sig.to_string(),
+    };
+    success_response(response)
+}
+
+#[handler]
+async fn aggregate_withdraw_stake_signatures(
+    req: Json<AggregateWithdrawStakeSignaturesRequest>,
+) -> impl IntoResponse {
+    let stake_accountt = match parse_pubkey(&req.stake_account) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let destination = match parse_pubkey(&req.destination) {
+        Ok(addr) => addr,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let block_hash = match parse_hash(&req.recent_block_hash) {
+        Ok(hash) => hash,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let keys: Vec<Pubkey> = match req
+        .keys
+        .iter()
+        .map(|k| parse_pubkey(k))
+        .collect::<Result<_, _>>()
+    {
+        Ok(keys) => keys,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let signatures: Vec<PartialSignature> = match req
+        .signatures
+        .iter()
+        .map(|s| PartialSignature::deserialize_bs58(s))
+        .collect::<Result<_, _>>()
+    {
+        Ok(sigs) => sigs,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let tx = match aggregate_withdraw_stake_signatures_and_broadcast(
+        stake_accountt,
+        destination,
+        req.amount,
+        block_hash,
+        keys,
+        signatures,
+    ) {
+        Ok(tx) => tx,
+        Err(e) => return error_response(e.to_string()),
+    };
+
+    let rpc_client = RpcClient::new(req.net.get_cluster_url().to_string());
+    let sig = match rpc_client.send_transaction(&tx) {
+        Ok(signature) => signature,
+        Err(e) => return error_response(Error::SendTransactionFailed(e).to_string()),
+    };
+
+    if let Err(e) =
+        rpc_client.confirm_transaction_with_spinner(&sig, &block_hash, rpc_client.commitment())
+    {
+        return error_response(Error::ConfirmingTransactionFailed(e).to_string());
+    }
+
+    let response = AggregateWithdrawStakeSignaturesResponse {
+        transaction_id: sig.to_string(),
+    };
+    success_response(response)
+}
+
+//staking end her
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let app = Route::new()
@@ -646,6 +1224,39 @@ async fn main() -> anyhow::Result<()> {
         .at(
             "/api/spl_aggregate_signatures",
             post(spl_aggregate_signatures),
+        )
+        .at("/api/stake", post(stake_account))
+        .at("/api/deactivate_stake", post(deactivate_stake))
+        .at("/api/withdraw_stake", post(withdraw_stake))
+        .at("/api/agg_stake_step_one", post(agg_stake_step_one))
+        .at("/api/agg_stake_step_two", post(agg_stake_step_two))
+        .at(
+            "/api/agg_deactivate_stake_step_one",
+            post(agg_deactivate_stake_step_one),
+        )
+        .at(
+            "/api/agg_deactivate_stake_step_two",
+            post(agg_deactivate_stake_step_two),
+        )
+        .at(
+            "/api/agg_withdraw_stake_step_one",
+            post(agg_withdraw_stake_step_one),
+        )
+        .at(
+            "/api/agg_withdraw_stake_step_two",
+            post(agg_withdraw_stake_step_two),
+        )
+        .at(
+            "/api/aggregate_stake_signatures",
+            post(aggregate_stake_signatures),
+        )
+        .at(
+            "/api/aggregate_deactivate_stake_signatures",
+            post(aggregate_deactivate_stake_signatures),
+        )
+        .at(
+            "/api/aggregate_withdraw_stake_signatures",
+            post(aggregate_withdraw_stake_signatures),
         );
 
     Server::new(TcpListener::bind("127.0.0.1:8000"))
