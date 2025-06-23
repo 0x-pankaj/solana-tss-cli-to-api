@@ -208,6 +208,7 @@ pub struct StakeAccountRequest {
     pub keypair: String,   // Base58 encoded keypair
     pub stake_amount: u64, // Amount to stake in lamports
     pub seed: String,      // Seed for deriving the stake account
+    pub validator_vote_accont: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -256,9 +257,10 @@ pub struct AggStakeStepOneResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AggStakeStepTwoRequest {
     pub net: Network,
-    pub keypair: String,             // Base58 encoded keypair
-    pub stake_amount: u64,           // Amount to stake in lamports
-    pub seed: String,                // Seed for stake account
+    pub keypair: String,   // Base58 encoded keypair
+    pub stake_amount: u64, // Amount to stake in lamports
+    pub seed: String,      // Seed for stake account
+    pub validator_vote_accont: String,
     pub keys: Vec<String>,           // List of pubkeys for aggregation
     pub first_messages: Vec<String>, // Base58 encoded AggMessage1
     pub secret_state: String,        // Base58 encoded SecretAggStepOne from step one
@@ -329,8 +331,9 @@ pub struct AggWithdrawStakeStepTwoResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AggregateStakeSignaturesRequest {
     pub net: Network,
-    pub stake_amount: u64,         // Amount to stake in lamports
-    pub seed: String,              // Seed for stake account
+    pub stake_amount: u64, // Amount to stake in lamports
+    pub seed: String,      // Seed for stake account
+    pub validator_vote_accont: String,
     pub keys: Vec<String>,         // List of pubkeys
     pub signatures: Vec<String>,   // Base58 encoded PartialSignatures
     pub recent_block_hash: String, // Base58 encoded recent blockhash

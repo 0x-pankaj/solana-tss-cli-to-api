@@ -302,6 +302,7 @@ pub fn stake_step_two(
     keypair: Keypair,
     stake_amount: u64,
     seed: String,
+    validator_vote_accont: Pubkey,
     recent_block_hash: Hash,
     keys: Vec<Pubkey>,
     first_messages: Vec<AggMessage1>,
@@ -312,11 +313,14 @@ pub fn stake_step_two(
         .map(|msg1| msg1.public_nonces.R)
         .collect();
 
+    // Generating the aggregate key together with the coefficient of the current keypair
     let aggkey = key_agg(keys.clone(), Some(keypair.pubkey()))?;
-    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
+    let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true)); //aggpubkey is generated with coefficient
     let extended_kepair = ExpandedKeyPair::create_from_private_key(keypair.secret().to_bytes());
 
-    let mut tx = create_stake_account_transaction(stake_amount, &seed, &aggpubkey)?;
+    //creating unsigned transaction
+    let mut tx =
+        create_stake_account_transaction(stake_amount, &seed, &aggpubkey, &validator_vote_accont)?;
 
     let signer = PartialSigner {
         signer_private_nonce: secret_state.private_nonces,
@@ -345,10 +349,12 @@ pub fn deactivate_stake_step_two(
         .map(|msg1| msg1.public_nonces.R)
         .collect();
 
+    // Generating the aggregate key together with the coefficient of the current keypair
     let aggkey = key_agg(keys.clone(), Some(keypair.pubkey()))?;
     let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
     let extended_kepair = ExpandedKeyPair::create_from_private_key(keypair.secret().to_bytes());
 
+    //creating unsigned Transaction
     let mut tx = create_deactivate_stake_transaction(&stake_account, &aggpubkey);
 
     let signer = PartialSigner {
@@ -380,10 +386,12 @@ pub fn withdraw_stake_step_two(
         .map(|msg1| msg1.public_nonces.R)
         .collect();
 
+    // Generating the aggregate key together with the coefficient of the current keypair
     let aggkey = key_agg(keys.clone(), Some(keypair.pubkey()))?;
     let aggpubkey = Pubkey::new(&*aggkey.agg_public_key.to_bytes(true));
     let extended_kepair = ExpandedKeyPair::create_from_private_key(keypair.secret().to_bytes());
 
+    //creating unsigned Transaction
     let mut tx =
         create_withdraw_stake_transaction(&stake_account, &destination, &aggpubkey, amount);
 
@@ -403,6 +411,7 @@ pub fn withdraw_stake_step_two(
 pub fn aggregate_stake_signatures_and_broadcast(
     stake_amount: u64,
     seed: String,
+    validator_vote_accont: Pubkey,
     recent_block_hash: Hash,
     keys: Vec<Pubkey>,
     signatures: Vec<PartialSignature>,
@@ -448,7 +457,8 @@ pub fn aggregate_stake_signatures_and_broadcast(
     sig_bytes[32..].copy_from_slice(&full_sig.s.to_bytes());
     let sig = Signature::new(&sig_bytes);
 
-    let mut tx = create_stake_account_transaction(stake_amount, &seed, &aggpubkey)?;
+    let mut tx =
+        create_stake_account_transaction(stake_amount, &seed, &aggpubkey, &validator_vote_accont)?;
 
     tx.message.recent_blockhash = recent_block_hash;
     assert_eq!(tx.signatures.len(), 1);
