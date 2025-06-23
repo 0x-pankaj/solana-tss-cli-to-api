@@ -462,34 +462,73 @@ async fn spl_send_single(req: Json<SplSendSingleRequest>) -> impl IntoResponse {
 
     // Convert amount to proper token units
     let token_amount = (req.amount * 10_f64.powi(req.decimals as i32)) as u64;
+    
+    //Derive ATAs
+    let from_ata = spl_associated_token_account::get_associated_token_address(&keypair.pubkey(), &token_mint);
+    let to_ata = spl_associated_token_account::get_associated_token_address(&to, &token_mint);
 
-    let mut tx = match create_spl_token_transaction(
-        token_amount,
+    //checking if destination ATA exists
+    let to_ata_exists = match rpc_client.get_account(&to_ata) {
+        Ok(_) => true,
+        Err(_) => false,
+    };
+
+let mut instructions = vec![];
+
+    // Create destination ATA if it doesn't exist
+    if !to_ata_exists {
+        let create_ata_instruction = spl_associated_token_account::instruction::create_associated_token_account(
+            &keypair.pubkey(), // Payer
+            &to,               // Owner
+            &token_mint,       // Mint
+            &spl_token::id(),  // Token program
+        );
+        instructions.push(create_ata_instruction);
+    }
+
+    // Create transfer instruction
+    let transfer_instruction = match spl_token::instruction::transfer(
+        &spl_token::id(),
+        &from_ata,
+        &to_ata,
         &keypair.pubkey(),
-        &to,
-        &token_mint,
-        &keypair.pubkey(), // payer is the same as from
-        req.memo.clone(),
-        req.decimals,
+        &[],
+        token_amount,
     ) {
-        Ok(tx) => tx,
+        Ok(instr) => instr,
         Err(e) => return error_response(e.to_string()),
     };
 
+    instructions.push(transfer_instruction);
+
+    // Add memo if provided
+    if let Some(memo) = req.memo.clone() {
+        instructions.push(spl_memo::build_memo(memo.as_bytes(), &[]));
+    }
+
+    // Create and sign transaction
     let recent_hash = match rpc_client.get_latest_blockhash() {
         Ok(hash) => hash,
         Err(e) => return error_response(Error::RecentHashFailed(e).to_string()),
     };
 
+    let mut tx = Transaction::new_with_payer(&instructions, Some(&keypair.pubkey()));
     tx.sign(&[&keypair], recent_hash);
 
+    // Send transaction
     let sig = match rpc_client.send_transaction(&tx) {
         Ok(signature) => signature,
-        Err(e) => return error_response(Error::SendTransactionFailed(e).to_string()),
+        Err(e) => {
+            if let Some(rpc_err) = e.get_transaction_error() {
+                eprintln!("Transaction error details: {:?}", rpc_err);
+            }
+            return error_response(Error::SendTransactionFailed(e).to_string());
+        }
     };
 
-    if let Err(e) =
-        rpc_client.confirm_transaction_with_spinner(&sig, &recent_hash, rpc_client.commitment())
+    // Confirm transaction
+    if let Err(e) = rpc_client
+        .confirm_transaction_with_spinner(&sig, &recent_hash, rpc_client.commitment())
     {
         return error_response(Error::ConfirmingTransactionFailed(e).to_string());
     }

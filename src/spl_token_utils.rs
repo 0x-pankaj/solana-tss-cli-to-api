@@ -6,6 +6,8 @@ use spl_associated_token_account::{
     get_associated_token_address, instruction::create_associated_token_account,
 };
 use spl_token::instruction as token_instruction;
+use solana_client::rpc_client::RpcClient;
+
 
 pub fn create_spl_token_transaction(
     amount: u64,
@@ -22,7 +24,10 @@ pub fn create_spl_token_transaction(
     let from_ata = get_associated_token_address(from, token_mint);
     let to_ata = get_associated_token_address(to, token_mint);
 
-    //  In a real implementation, we check if the account exists via RPC
+    let rpc_client = RpcClient::new("https://api.testnet.solana.com".to_string());
+
+    if rpc_client.get_account(&from_ata).is_err() {
+
     // For now,  always try to create it (instruction will fail if it already exists)
     let create_ata_instruction = create_associated_token_account(
         payer, // fee payer
@@ -31,18 +36,19 @@ pub fn create_spl_token_transaction(
         &spl_token::id(),
     );
     instructions.push(create_ata_instruction);
+    }
 
-    // ----- in production
-    // client = rpc client
-    // let account_info =  client.get_account(&to_ata);
-    // if account_info.is_err() {
-    //     let create_ata_instruction = create_associated_token_account(
-    //         payer, // fee payer
-    //         to,    // wallet owner
-    //         token_mint,
-    //         &spl_token::id(),
-    //     );
-    // }
+
+    if rpc_client.get_account(&to_ata).is_err() {
+    let create_to_ata_instruction = create_associated_token_account(
+            payer,     // fee payer
+            to,        // wallet owner
+            token_mint,
+            &spl_token::id(),
+        );
+        instructions.push(create_to_ata_instruction);
+
+    }
 
     // Create the token transfer instruction
     let transfer_instruction = token_instruction::transfer(
@@ -54,6 +60,7 @@ pub fn create_spl_token_transaction(
         amount,
     )?;
     instructions.push(transfer_instruction);
+    
 
     //  memo instruction if provided
     if let Some(memo_text) = memo {
