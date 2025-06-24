@@ -830,21 +830,6 @@ async fn withdraw_stake(req: Json<WithdrawStakeRequest>) -> impl IntoResponse {
 }
 
 #[handler]
-async fn agg_stake_step_one(req: Json<AggStakeStepOneRequest>) -> impl IntoResponse {
-    let keypair = match parse_keypair_bs58(&req.keypair) {
-        Ok(kp) => kp,
-        Err(e) => return error_response(e.to_string()),
-    };
-
-    let (first_msg, secret) = step_one(keypair);
-    let response = AggStakeStepOneResponse {
-        message_1: first_msg.serialize_bs58(),
-        secret_state: secret.serialize_bs58(),
-    };
-    success_response(response)
-}
-
-#[handler]
 async fn agg_stake_step_two(req: Json<AggStakeStepTwoRequest>) -> impl IntoResponse {
     let keypair = match parse_keypair_bs58(&req.keypair) {
         Ok(kp) => kp,
@@ -907,23 +892,6 @@ async fn agg_stake_step_two(req: Json<AggStakeStepTwoRequest>) -> impl IntoRespo
 }
 
 #[handler]
-async fn agg_deactivate_stake_step_one(
-    req: Json<AggDeactivateStakeStepOneRequest>,
-) -> impl IntoResponse {
-    let keypair = match parse_keypair_bs58(&req.keypair) {
-        Ok(kp) => kp,
-        Err(e) => return error_response(e.to_string()),
-    };
-
-    let (first_msg, secret) = step_one(keypair);
-    let response = AggDeactivateStakeStepOneResponse {
-        message_1: first_msg.serialize_bs58(),
-        secret_state: secret.serialize_bs58(),
-    };
-    success_response(response)
-}
-
-#[handler]
 async fn agg_deactivate_stake_step_two(
     req: Json<AggDeactivateStakeStepTwoRequest>,
 ) -> impl IntoResponse {
@@ -981,23 +949,6 @@ async fn agg_deactivate_stake_step_two(
 
     let response = AggDeactivateStakeStepTwoResponse {
         partial_signature: sig.serialize_bs58(),
-    };
-    success_response(response)
-}
-
-#[handler]
-async fn agg_withdraw_stake_step_one(
-    req: Json<AggWithdrawStakeStepOneRequest>,
-) -> impl IntoResponse {
-    let keypair = match parse_keypair_bs58(&req.keypair) {
-        Ok(kp) => kp,
-        Err(e) => return error_response(e.to_string()),
-    };
-
-    let (first_msg, secret) = step_one(keypair);
-    let response = AggWithdrawStakeStepOneResponse {
-        message_1: first_msg.serialize_bs58(),
-        secret_state: secret.serialize_bs58(),
     };
     success_response(response)
 }
@@ -1075,13 +1026,13 @@ async fn agg_withdraw_stake_step_two(
 async fn aggregate_stake_signatures(
     req: Json<AggregateStakeSignaturesRequest>,
 ) -> impl IntoResponse {
-    let block_hash = match parse_hash(&req.recent_block_hash) {
-        Ok(hash) => hash,
+    let vote_account = match parse_pubkey(&req.validator_vote_accont) {
+        Ok(vc) => vc,
         Err(e) => return error_response(e.to_string()),
     };
 
-    let vote_account = match parse_pubkey(&req.validator_vote_accont) {
-        Ok(vc) => vc,
+    let block_hash = match parse_hash(&req.recent_block_hash) {
+        Ok(hash) => hash,
         Err(e) => return error_response(e.to_string()),
     };
 
@@ -1290,19 +1241,10 @@ async fn main() -> anyhow::Result<()> {
         .at("/api/stake", post(stake_account))
         .at("/api/deactivate_stake", post(deactivate_stake))
         .at("/api/withdraw_stake", post(withdraw_stake))
-        .at("/api/agg_stake_step_one", post(agg_stake_step_one))
         .at("/api/agg_stake_step_two", post(agg_stake_step_two))
-        .at(
-            "/api/agg_deactivate_stake_step_one",
-            post(agg_deactivate_stake_step_one),
-        )
         .at(
             "/api/agg_deactivate_stake_step_two",
             post(agg_deactivate_stake_step_two),
-        )
-        .at(
-            "/api/agg_withdraw_stake_step_one",
-            post(agg_withdraw_stake_step_one),
         )
         .at(
             "/api/agg_withdraw_stake_step_two",

@@ -19,14 +19,11 @@ pub fn create_stake_account_transaction(
 ) -> Result<Transaction, Error> {
     let stake_account = Pubkey::create_with_seed(payer, seed, &solana_sdk::stake::program::id())
         .map_err(|e| Error::InvalidStakeAccountSeed(e.to_string()))?;
-    println!(" stake_account: {:?}", stake_account);
+
     let space = std::mem::size_of::<StakeStateV2>() as u64;
     let rent = RpcClient::new("https://api.testnet.solana.com")
         .get_minimum_balance_for_rent_exemption(space as usize)
         .map_err(|e| Error::StakeAccountCreationFailed(e.to_string()))?;
-
-    //print rent
-    println!("rent : {:?}", rent);
 
     let create_account_ins = system_instruction::create_account_with_seed(
         payer,

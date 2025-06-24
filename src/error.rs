@@ -35,6 +35,8 @@ pub enum Error {
     DeactivationFailed(String),
     WithdrawalFailed(String),
     InvalidPublicKey(String),
+    InsufficientBalance(String),
+    BalanceCheckFailed(String),
 }
 
 impl Display for Error {
@@ -83,6 +85,8 @@ impl Display for Error {
             Self::DeactivationFailed(e) => write!(f, "Failed to deactivate stake: {}", e),
             Self::WithdrawalFailed(e) => write!(f, "Failed to withdraw stake: {}", e),
             Self::InvalidPublicKey(e) => write!(f, "invalid public key: {}", e),
+            Self::InsufficientBalance(e) => write!(f, "insufficient balance: {}", e),
+            Self::BalanceCheckFailed(e) => write!(f, " balance check fail: {}", e),
         }
     }
 }
